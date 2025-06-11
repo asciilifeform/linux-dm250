@@ -6,6 +6,8 @@
  * Author: Rabin Vincent <rabin.vincent@stericsson.com> for ST-Ericsson
  */
 
+#include <linux/gpio/consumer.h>
+#include <linux/delay.h>
 #include <linux/module.h>
 #include <linux/interrupt.h>
 #include <linux/irq.h>
@@ -281,6 +283,34 @@ static int tc3589x_chip_init(struct tc3589x *tc3589x)
 	return tc3589x_reg_write(tc3589x, TC3589x_RSTINTCLR, 0x1);
 }
 
+static void tc3589x_reset(struct tc3589x *tc3589x)
+{
+	unsigned long tmo;
+	int data;
+
+	if (tc3589x->reset_gpio) {
+                gpiod_set_value_cansleep(tc3589x->reset_gpio, 0);
+                fsleep(1);
+                gpiod_set_value_cansleep(tc3589x->reset_gpio, 1);
+                fsleep(1);
+	}
+
+	tmo = jiffies + usecs_to_jiffies(280);
+	while ((data = tc3589x_reg_read(tc3589x, TC3589x_IRQST)) == 1) {
+                if (data & 0x80) { /* power on reset complete */
+                        /* clear the PORIRQ bit */
+                        tc3589x_reg_write(tc3589x, TC3589x_RSTINTCLR, 0x01);
+                        break;
+                }
+                if (time_after(jiffies, tmo)) {
+                        dev_err(tc3589x->dev,
+                                "timeout waiting for init!\n");
+                        break;
+                }
+                fsleep(1);
+	}
+}
+
 static int tc3589x_device_init(struct tc3589x *tc3589x)
 {
 	int ret = 0;
@@ -357,6 +387,7 @@ static int tc3589x_probe(struct i2c_client *i2c)
 	struct tc3589x_platform_data *pdata = dev_get_platdata(&i2c->dev);
 	struct tc3589x *tc3589x;
 	enum tc3589x_version version;
+	struct gpio_desc *reset_gpio = NULL;
 	int ret;
 
 	if (!pdata) {
@@ -364,6 +395,14 @@ static int tc3589x_probe(struct i2c_client *i2c)
 		if (IS_ERR(pdata)) {
 			dev_err(&i2c->dev, "No platform data or DT found\n");
 			return PTR_ERR(pdata);
+		}
+
+		reset_gpio = devm_gpiod_get_optional(&i2c->dev, "reset",
+                                                     GPIOD_OUT_LOW);
+		if (IS_ERR(reset_gpio)) {
+			ret = PTR_ERR(reset_gpio);
+			if (ret == -EPROBE_DEFER)
+				return ret;
 		}
 	} else {
 		/* When not probing from device tree we have this ID */
@@ -384,6 +423,7 @@ static int tc3589x_probe(struct i2c_client *i2c)
 	tc3589x->dev = &i2c->dev;
 	tc3589x->i2c = i2c;
 	tc3589x->pdata = pdata;
+	tc3589x->reset_gpio = reset_gpio;
 
 	switch (version) {
 	case TC3589X_TC35893:
@@ -402,9 +442,15 @@ static int tc3589x_probe(struct i2c_client *i2c)
 
 	i2c_set_clientdata(i2c, tc3589x);
 
+	tc3589x_reset(tc3589x);
+
+	tc3589x_reg_write(tc3589x, TC3589x_DKBDIC, 0x01);
+
 	ret = tc3589x_chip_init(tc3589x);
 	if (ret)
 		return ret;
+
+	tc3589x_reg_write(tc3589x, TC3589x_DKBDMSK, 0x03);
 
 	ret = tc3589x_irq_init(tc3589x, np);
 	if (ret)

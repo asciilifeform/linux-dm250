@@ -105,6 +105,7 @@ enum tx3589x_block {
 #define TC3589x_GPIOODE2	0xE5
 
 #define TC3589x_DIRECT0		0xEC
+#define TC3589x_DKBDIC 		0xF2
 #define TC3589x_DKBDMSK		0xF3
 
 #define TC3589x_INT_GPIIRQ	0
@@ -125,6 +126,7 @@ struct tc3589x {
 
 	int irq_base;
 	int num_gpio;
+	struct gpio_desc *reset_gpio;
 	struct tc3589x_platform_data *pdata;
 };
 
@@ -141,7 +143,7 @@ extern int tc3589x_set_bits(struct tc3589x *tc3589x, u8 reg, u8 mask, u8 val);
  * These values may be modified for fine tuning
  */
 #define TC_KPD_ROWS             0x8
-#define TC_KPD_COLUMNS          0x8
+#define TC_KPD_COLUMNS          0xC
 #define TC_KPD_DEBOUNCE_PERIOD  0xA3
 #define TC_KPD_SETTLE_TIME      0xA3
 
