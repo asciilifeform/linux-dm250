@@ -120,4 +120,10 @@
 #define   PX30_LVDS_P2S_EN(val)			HIWORD_UPDATE(val,  6,  6)
 #define   PX30_LVDS_VOP_SEL(val)		HIWORD_UPDATE(val,  1,  1)
 
+#define RK3126_LVDS_GRF_CON0			0x0150
+#define   RK3126_LVDS_P2S_EN(x) 		HIWORD_UPDATE(x,  9,  9)
+#define   RK3126_LVDS_MODE_EN(x)		HIWORD_UPDATE(x,  6,  6)
+#define   RK3126_LVDS_MSBSEL(x) 		HIWORD_UPDATE(x,  3,  3)
+#define   RK3126_LVDS_SELECT(x) 		HIWORD_UPDATE(x,  2,  1)
+
 #endif /* _ROCKCHIP_LVDS_ */

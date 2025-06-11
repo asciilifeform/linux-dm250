@@ -350,11 +350,40 @@ static int px30_lvds_poweron(struct rockchip_lvds *lvds)
 	return ret;
 }
 
+static int rk3126_lvds_poweron(struct rockchip_lvds *lvds)
+{
+	int ret;
+
+	ret = pm_runtime_resume_and_get(lvds->dev);
+	if (ret < 0) {
+		DRM_DEV_ERROR(lvds->dev, "failed to get pm runtime: %d\n", ret);
+		return ret;
+	}
+
+	/* Enable LVDS mode */
+	ret = regmap_update_bits(lvds->grf, RK3126_LVDS_GRF_CON0,
+				 RK3126_LVDS_P2S_EN(1) | RK3126_LVDS_MODE_EN(1),
+				 RK3126_LVDS_P2S_EN(1) | RK3126_LVDS_MODE_EN(1));
+	if (ret)
+		pm_runtime_put(lvds->dev);
+
+	return ret;
+}
+
 static void px30_lvds_poweroff(struct rockchip_lvds *lvds)
 {
 	regmap_update_bits(lvds->grf, PX30_LVDS_GRF_PD_VO_CON1,
 			   PX30_LVDS_MODE_EN(1) | PX30_LVDS_P2S_EN(1),
 			   PX30_LVDS_MODE_EN(0) | PX30_LVDS_P2S_EN(0));
+
+	pm_runtime_put(lvds->dev);
+}
+
+static void rk3126_lvds_poweroff(struct rockchip_lvds *lvds)
+{
+	regmap_update_bits(lvds->grf, RK3126_LVDS_GRF_CON0,
+			   RK3126_LVDS_P2S_EN(1) | RK3126_LVDS_MODE_EN(1),
+			   RK3126_LVDS_P2S_EN(0) | RK3126_LVDS_MODE_EN(0));
 
 	pm_runtime_put(lvds->dev);
 }
@@ -430,6 +459,63 @@ static void px30_lvds_encoder_disable(struct drm_encoder *encoder)
 	px30_lvds_poweroff(lvds);
 	drm_panel_unprepare(lvds->panel);
 }
+
+static int rk3126_lvds_grf_config(struct drm_encoder *encoder,
+				  struct drm_display_mode *mode)
+{
+	struct rockchip_lvds *lvds = encoder_to_lvds(encoder);
+
+	if (lvds->output != DISPLAY_OUTPUT_LVDS) {
+		DRM_DEV_ERROR(lvds->dev, "Unsupported display output %d\n",
+			      lvds->output);
+		return -EINVAL;
+	}
+
+	return regmap_update_bits(lvds->grf, RK3126_LVDS_GRF_CON0,
+				  RK3126_LVDS_SELECT(lvds->format),
+				  RK3126_LVDS_SELECT(lvds->format));
+}
+
+static void rk3126_lvds_encoder_enable(struct drm_encoder *encoder)
+{
+	struct rockchip_lvds *lvds = encoder_to_lvds(encoder);
+	struct drm_display_mode *mode = &encoder->crtc->state->adjusted_mode;
+	int ret;
+
+	drm_panel_prepare(lvds->panel);
+
+	ret = rk3126_lvds_poweron(lvds);
+	if (ret) {
+		DRM_DEV_ERROR(lvds->dev, "failed to power on LVDS: %d\n", ret);
+		drm_panel_unprepare(lvds->panel);
+		return;
+	}
+
+	ret = rk3126_lvds_grf_config(encoder, mode);
+	if (ret) {
+		DRM_DEV_ERROR(lvds->dev, "failed to configure LVDS: %d\n", ret);
+		drm_panel_unprepare(lvds->panel);
+		return;
+	}
+
+	drm_panel_enable(lvds->panel);
+}
+
+static void rk3126_lvds_encoder_disable(struct drm_encoder *encoder)
+{
+	struct rockchip_lvds *lvds = encoder_to_lvds(encoder);
+
+	drm_panel_disable(lvds->panel);
+	rk3126_lvds_poweroff(lvds);
+	drm_panel_unprepare(lvds->panel);
+}
+
+static const
+struct drm_encoder_helper_funcs rk3126_lvds_encoder_helper_funcs = {
+	.enable = rk3126_lvds_encoder_enable,
+	.disable = rk3126_lvds_encoder_disable,
+	.atomic_check = rockchip_lvds_encoder_atomic_check,
+};
 
 static const
 struct drm_encoder_helper_funcs rk3288_lvds_encoder_helper_funcs = {
@@ -508,6 +594,39 @@ static int px30_lvds_probe(struct platform_device *pdev,
 	return phy_power_on(lvds->dphy);
 }
 
+static int rk3126_lvds_probe(struct platform_device *pdev,
+                             struct rockchip_lvds *lvds)
+{
+	int ret;
+
+	/* MSB */
+	ret = regmap_update_bits(lvds->grf, RK3126_LVDS_GRF_CON0,
+				 RK3126_LVDS_MSBSEL(1),
+				 RK3126_LVDS_MSBSEL(1));
+	if (ret)
+		return ret;
+
+	/* PHY */
+	lvds->dphy = devm_phy_get(&pdev->dev, "dphy");
+	if (IS_ERR(lvds->dphy))
+		return PTR_ERR(lvds->dphy);
+
+	ret = phy_init(lvds->dphy);
+	if (ret)
+		return ret;
+
+	ret = phy_set_mode(lvds->dphy, PHY_MODE_LVDS);
+	if (ret)
+		return ret;
+
+	return phy_power_on(lvds->dphy);
+}
+
+static const struct rockchip_lvds_soc_data rk3126_lvds_data = {
+	.probe = rk3126_lvds_probe,
+	.helper_funcs = &rk3126_lvds_encoder_helper_funcs,
+};
+
 static const struct rockchip_lvds_soc_data rk3288_lvds_data = {
 	.probe = rk3288_lvds_probe,
 	.helper_funcs = &rk3288_lvds_encoder_helper_funcs,
@@ -519,6 +638,10 @@ static const struct rockchip_lvds_soc_data px30_lvds_data = {
 };
 
 static const struct of_device_id rockchip_lvds_dt_ids[] = {
+	{
+		.compatible = "rockchip,rk3126-lvds",
+		.data = &rk3126_lvds_data
+	},
 	{
 		.compatible = "rockchip,rk3288-lvds",
 		.data = &rk3288_lvds_data
@@ -572,8 +695,8 @@ static int rockchip_lvds_bind(struct device *dev, struct device *master,
 	else
 		remote = lvds->bridge->of_node;
 	if (of_property_read_string(dev->of_node, "rockchip,output", &name))
-		/* default set it as output rgb */
-		lvds->output = DISPLAY_OUTPUT_RGB;
+		/* default set it as output lvds */
+		lvds->output = DISPLAY_OUTPUT_LVDS;
 	else
 		lvds->output = rockchip_lvds_name_to_output(name);
 
